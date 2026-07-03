@@ -1,0 +1,6 @@
+lit==16.0.6 # required for mlir testing
+# Install MLIR Python bindings from prebuilt wheels or use the source build by defining PYTHONPATH
+pip install mlir_python_bindings -f https://github.com/makslevental/mlir-wheels/releases/expanded_assets/latest
+
+# For GPU support (according to https://www.stephendiehl.com/posts/mlir_gpu/)
+cuda-python
