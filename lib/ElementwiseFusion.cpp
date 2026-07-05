@@ -1,16 +1,11 @@
 //===----------------------------------------------------------------------===//
 // ElementwiseFusion.cpp
 //
-// Fuses element-wise linalg.generic ops into their consumers.
-// Uses MLIR's own fuseElementwiseOps with a control function that:
-//   - Only fuses non-reduction producers (all parallel loops)
-//   - Skips producers with multiple consumers (avoids compute duplication)
-//   - Operates top-down (producers before consumers)
-//
-// Prerequisite: run --linalg-generalize-named-ops first to convert matmuls
-// and batch_matmuls to generics so they can participate in fusion.
-//
-// Run: tutorial-opt --fuse-elementwise gpt2_clean.mlir
+// Fuses adjacent element-wise linalg.generic ops where both are pure
+// parallel with identity-like indexing maps. This is safe because:
+//   - Only element-wise ops are fused (no reduction consumers)
+//   - No init-tensor producers (linalg.fill stays separate)
+//   - Single-use producers only (no compute duplication)
 //===----------------------------------------------------------------------===//
 
 #include "lib/ElementwiseFusion.h"
@@ -28,88 +23,89 @@ using namespace mlir::linalg;
 namespace mlir {
 namespace tutorial {
 
+/// Return true if all indexing maps are identity-like (each dim maps to
+/// exactly one operand dim with stride 1), meaning pure element-wise.
+static bool isElementwiseLike(GenericOp op) {
+  for (auto map : op.getIndexingMapsArray()) {
+    if (map.getNumResults() != op.getNumLoops())
+      return false;
+    for (unsigned i = 0; i < map.getNumResults(); i++) {
+      auto expr = map.getResult(i);
+      if (!isa<AffineDimExpr>(expr))
+        return false;
+      if (cast<AffineDimExpr>(expr).getPosition() != i)
+        return false;
+    }
+  }
+  return true;
+}
+
 void ElementwiseFusionPass::runOnOperation() {
   ModuleOp module = getOperation();
 
-  // ---- Step 1: Generalize named ops so matmuls can participate -----------
-  // Convert linalg.matmul and linalg.batch_matmul to linalg.generic
-  // so that element-wise fusion can fuse producers into them.
-
-  llvm::outs() << "Generalizing named ops (matmul/batch_matmul → generic)...\n";
-  {
-    RewritePatternSet generalizePatterns(&getContext());
-    linalg::populateLinalgNamedOpsGeneralizationPatterns(generalizePatterns);
-    if (failed(applyPatternsGreedily(module, std::move(generalizePatterns)))) {
-      llvm::errs() << "Generalization failed\n";
-      signalPassFailure();
-      return;
-    }
-  }
-
-  // Count matmuls/batch_matmuls that were generalized
-  int remainingNamed = 0;
-  module.walk([&](linalg::MatmulOp) { remainingNamed++; });
-  module.walk([&](linalg::BatchMatmulOp) { remainingNamed++; });
-  llvm::outs() << "  Named ops remaining: " << remainingNamed
-               << " (should be 0)\n\n";
-
-  // ---- Step 2: Fuse element-wise ops into their consumers ---------------
-  // Control function: only fuse if producer has all-parallel iterators
-  // and producer result has exactly one use (avoid duplicating compute).
-  llvm::outs() << "Fusing element-wise generics into consumers...\n";
-
   int fusedCount = 0;
+  int skippedReduction = 0;
+  int skippedNonElem = 0;
+  int skippedMultiUse = 0;
+
   auto controlFn = [&](OpOperand *fusedOperand) -> bool {
-    // Get the producer generic
-    auto producer =
-        fusedOperand->get().getDefiningOp<linalg::GenericOp>();
+    auto producer = fusedOperand->get().getDefiningOp<GenericOp>();
     if (!producer)
       return false;
 
-    // Only fuse all-parallel producers (skip reductions)
+    // Producer must be all-parallel
     if (producer.getNumParallelLoops() != producer.getNumLoops())
       return false;
 
-    // Only fuse if producer result has a single use (avoid duplicating)
-    if (!fusedOperand->get().hasOneUse())
+    // Producer must have a single use
+    if (!fusedOperand->get().hasOneUse()) {
+      skippedMultiUse++;
       return false;
+    }
+
+    // Consumer must be all-parallel (no fusing into reductions)
+    auto consumer = dyn_cast<GenericOp>(fusedOperand->getOwner());
+    if (!consumer || consumer.getNumParallelLoops() != consumer.getNumLoops()) {
+      skippedReduction++;
+      return false;
+    }
+
+    // Both must be element-wise (identity-like maps)
+    if (!isElementwiseLike(producer) || !isElementwiseLike(consumer)) {
+      skippedNonElem++;
+      return false;
+    }
 
     fusedCount++;
     return true;
   };
 
-  {
-    RewritePatternSet fusionPatterns(&getContext());
-    populateElementwiseOpsFusionPatterns(fusionPatterns, controlFn);
-    if (failed(applyPatternsGreedily(module, std::move(fusionPatterns)))) {
-      llvm::errs() << "Fusion failed\n";
-      signalPassFailure();
-      return;
-    }
+  llvm::outs() << "Fusing element-wise generics into consumers...\n";
+
+  RewritePatternSet fusionPatterns(&getContext());
+  populateElementwiseOpsFusionPatterns(fusionPatterns, controlFn);
+  if (failed(applyPatternsGreedily(module, std::move(fusionPatterns)))) {
+    llvm::errs() << "Fusion failed\n";
+    signalPassFailure();
+    return;
   }
 
-  llvm::outs() << "  Fused " << fusedCount << " element-wise generic(s)"
-               << " into their consumers\n";
+  llvm::outs() << "  Fused:           " << fusedCount << "\n";
+  llvm::outs() << "  Skipped non-elem:" << skippedNonElem << "\n";
+  llvm::outs() << "  Skipped reduct.: " << skippedReduction << "\n";
+  llvm::outs() << "  Skipped multi-use:" << skippedMultiUse << "\n";
 
-  // ---- Step 3: Stats -----------------------------------------------------
-  int genericsAfter = 0;
-  module.walk([&](linalg::GenericOp) { genericsAfter++; });
+  // Stats
+  int generics = 0, matmuls = 0, batchMat = 0;
+  module.walk([&](GenericOp) { generics++; });
+  module.walk([&](MatmulOp) { matmuls++; });
+  module.walk([&](BatchMatmulOp) { batchMat++; });
 
-  llvm::outs() << "\n--- POST-FUSION STATS ---\n";
-  llvm::outs() << "  linalg.generic ops remaining: " << genericsAfter << "\n";
-
-  // Count reduction generics (these should remain unfused)
-  int reductionOps = 0;
-  module.walk([&](linalg::GenericOp generic) {
-    if (generic.getNumParallelLoops() != generic.getNumLoops())
-      reductionOps++;
-  });
-  llvm::outs() << "  Of which are reductions:     " << reductionOps << "\n";
-  llvm::outs() << "  Of which are pure parallel:  "
-               << (genericsAfter - reductionOps) << "\n";
-
-  llvm::outs() << "\n==================================================\n";
-  llvm::outs() << "DONE.\n";
+  llvm::outs() << "\n--- POST-FUSION ---\n";
+  llvm::outs() << "  linalg.generic:   " << generics << "\n";
+  llvm::outs() << "  linalg.matmul:    " << matmuls << "\n";
+  llvm::outs() << "  linalg.batch_mat: " << batchMat << "\n";
+  llvm::outs() << "  DONE.\n";
 }
 
 } // namespace tutorial
