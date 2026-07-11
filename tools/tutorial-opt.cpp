@@ -4,6 +4,8 @@
 #include "lib/DeadArgmaxElimination.h"
 #include "lib/GPT2SliceAnalysis.h"
 #include "lib/GPT2DataFlowAnalysis.h"
+#include "lib/PolyhedralAnalysis.h"
+#include "lib/PolyhedralParallelize.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -87,6 +89,8 @@ int main(int argc, char **argv) {
   mlir::PassRegistration<mlir::tutorial::DeadArgmaxEliminationPass>();
   mlir::PassRegistration<mlir::tutorial::LinalgAnalysisPass>();
   mlir::PassRegistration<mlir::tutorial::ElementwiseFusionPass>();
+  mlir::PassRegistration<mlir::tutorial::PolyhedralAnalysisPass>();
+  mlir::PassRegistration<mlir::tutorial::PolyhedralParallelizePass>();
 
   mlir::PassPipelineRegistration<>(
       "linalg-to-bufferization",

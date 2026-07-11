@@ -10,6 +10,8 @@ set (LIBS
     DeadArgmaxElimination
     LinalgAnalysis
     ElementwiseFusion
+    PolyhedralAnalysis
+    PolyhedralParallelize
     MLIROptLib
     MLIRPass
     MLIRRegisterAllDialects

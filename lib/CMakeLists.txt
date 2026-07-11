@@ -100,3 +100,47 @@ add_mlir_library(ElementwiseFusion
     MLIRLinalgDialect
     MLIRTransformUtils
 )
+
+add_mlir_library(PolyhedralAnalysis
+    PolyhedralAnalysis.cpp
+
+    ADDITIONAL_HEADER_DIRS
+    ${PROJECT_SOURCE_DIR}/lib
+
+    PARTIAL_SOURCES_INTENDED
+
+    LINK_LIBS PUBLIC
+    MLIRIR
+    MLIRPass
+    MLIRAnalysis
+    MLIRAffineDialect
+    MLIRAffineAnalysis
+    MLIRLinalgDialect
+    MLIRFuncDialect
+    MLIRMemRefDialect
+    MLIRPresburger
+    MLIRSupport
+)
+
+add_mlir_library(PolyhedralParallelize
+    PolyhedralParallelize.cpp
+
+    ADDITIONAL_HEADER_DIRS
+    ${PROJECT_SOURCE_DIR}/lib
+
+    PARTIAL_SOURCES_INTENDED
+
+    LINK_LIBS PUBLIC
+    MLIRIR
+    MLIRPass
+    MLIRAnalysis
+    MLIRAffineDialect
+    MLIRLinalgDialect
+    MLIRLinalgTransformOps
+    MLIRSCFDialect
+    MLIRFuncDialect
+    MLIRMemRefDialect
+    MLIRPresburger
+    MLIRTransformUtils
+    MLIRRewrite
+)
